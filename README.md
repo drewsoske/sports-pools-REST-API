@@ -4,6 +4,9 @@ Python Flask-RESTful API connecting to NHL and NBA standings to build JSON outpu
 v.1
 DESCRIPTION
 This is a API that delivers a JSON object to a supporting Django web app.
+Each sport has it's teams broken out into groups/regions/other
+Each member choses one team from each group/region/other
+UI for members to chose teams will be available shortly 
 
 GET functions
 NHL_BUILD
@@ -19,6 +22,8 @@ INSTALL
 See setup.py for PIP installation
 
 DATABASE
+sqlite3
+Database has sample data already in it to get you up and running 
 members
 members_teams
 sports
