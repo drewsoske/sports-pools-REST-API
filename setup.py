@@ -1,0 +1,12 @@
+install_requires=[
+    'flask',
+    'flask_restful',
+    'flask_sqlalchemy',
+    'logging',
+    'sqlalchemy',
+    'os',
+    'simplejson',
+    'requests',
+    'unicodedata',
+    'unittest',
+]
