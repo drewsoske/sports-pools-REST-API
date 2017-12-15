@@ -1,6 +1,18 @@
 # sports-pools-REST-API
 Python Flask-RESTful API connecting to NHL and NBA standings to build JSON output for supporting web apps
 
+v.1.1
+POST ability for members, member's teams choices
+SECURITY TOKENS using itsdangerous 
+--2 Step
+----/api/auth POST key TO OBTAIN TOKEN (secret stored in separate file not included on Git)
+----Other Routes SEND key, token WITH EVERY REQUEST 
+
+REFACTORING
+Functions Optimized for both sports and accomodate more 
+
+========
+
 v.1
 DESCRIPTION
 This is a API that delivers a JSON object to a supporting Django web app.
