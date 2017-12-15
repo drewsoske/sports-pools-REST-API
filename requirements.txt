@@ -1,10 +1,14 @@
 flask
 flask_restful
+flask_httpauth
 flask_sqlalchemy
+hashlib
+itsdangerous
 logging
-sqlalchemy
 os
-simplejson
 requests
+simplejson
+sqlalchemy
+sys
 unicodedata
 unittest

@@ -1,34 +1,90 @@
-from flask import Flask, request, abort, jsonify
-from flask_restful import Resource, Api
+from _ckrits import Secrets
+from flask import Flask, request, abort, jsonify, session
+from flask_restful import Resource, Api, reqparse
 from flask_sqlalchemy import SQLAlchemy
+from flask_httpauth import HTTPBasicAuth
+from itsdangerous import (TimedJSONWebSignatureSerializer as Serializer, BadSignature, SignatureExpired)
 from logging.handlers import RotatingFileHandler
+from models import Members, Teams, MembersTeams, SportsColumns, SportsColumnsTeams
 from sqlalchemy import create_engine
 
-from models import Members, Teams, MembersTeams, SportsColumns, SportsColumnsTeams
-
+import hashlib
 import logging
 import os
-import simplejson as json
 import requests
+import simplejson as json
+import sys
 import unicodedata
 
-
-db_connect = create_engine('sqlite:///pools.db')
+# FLASK APP
 app = Flask(__name__)
-
-@app.route("/log")
-def logTest():
-    return "Code Handbook !! Log testing."
-
-api = Api(app)
-basedir = os.path.abspath(os.path.dirname(__file__))
+secret = Secrets()
+app.config['SECRET_KEY'] = secret.secret() #'Dr3wgIlity57h0u$@nD' # Keep this in another file outside project
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'pools.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
+# START Flask_RESTFul API
+api = Api(app)
+basedir = os.path.abspath(os.path.dirname(__file__))
+
+# DB 
+db_connect = create_engine('sqlite:///pools.db')
 db = SQLAlchemy(app)
+
+# START SESSION
+session = requests.Session()
+session.headers['Content-Type'] = 'application/json'
+
+
+# AUTHORIZE AND MAKE, SEND & STORE TOKEN
+class API_Auth(Resource):
+    def __init__(self):
+        self.reqparse = reqparse.RequestParser()
+        self.reqparse.add_argument('key', type=str, required=True, help='API Key is required')
+        super(API_Auth, self).__init__()
+
+    def post(self):
+        ''' 
+           ONLY POST TO LOGIN FIRST TO GAIN TOKEN - SEND TO REQUESTOR
+           TOKEN IS TO BE CHECKED WITH EACH REQUEST IN THE API ROUTES
+        '''
+        args = self.reqparse.parse_args()
+        # MAKE THE TOKEN
+        t = self.make_token(800, args['key'])
+        # ADD FURTHER HASHED TOKEN TO SESSION
+        s = hashlib.sha224(str(t).encode('utf-8') + str(args['key']).encode('utf-8') + str(app.config['SECRET_KEY']).encode('utf-8')).hexdigest()
+        session.auth = s
+        return t
+
+    def make_token(self, expiration=800, key=1234):
+        ''' MAKE A TOKEN '''
+        s = Serializer(app.config['SECRET_KEY'], expires_in=expiration)
+        t = hashlib.sha224(str(s.dumps({'key':key})).encode('utf-8')).hexdigest()
+        return t
+
+    def check_token(self, key, token):
+        ''' CHECK THE TOKEN '''
+        args = self.reqparse.parse_args()
+        c = hashlib.sha224(str(token).encode('utf-8') + str(key).encode('utf-8') + str(app.config['SECRET_KEY']).encode('utf-8')).hexdigest()
+        if c == session.auth:
+            return True
+        return False
+
+
+def authenticate(key, token):
+    a = API_Auth()
+    c = a.check_token(key, token)
+    print(key, token, c)
+    if c:
+        return True
+    else:
+        return {'message': 'You must login. Please obtain an API Key from drewsoske.com if you need one.'}
+        #Response('Login Please. Thank You.', 401, {'WWW Authenticate': 'Basic Realm="Login Please. Thank You."'})
+
 
 class Feeds:
     def get(self, sport_id):
-        d = 'nun'
+        d = {'message': 'No Results'}
         if sport_id == 1:
             url = "http://statsapi.web.nhl.com/api/v1/standings?season=20172018"
             r = requests.get(url, stream=True)
@@ -41,6 +97,7 @@ class Feeds:
             d = json.loads(r.text)
             return d
 
+
 class Parser:
     def get(self, sport_id, feed, seed=False):
         t, output, seeder = Utility(), {}, []
@@ -52,8 +109,10 @@ class Parser:
                     seeder.append(name)
         elif sport_id == 2:
             for team in feed['standing']:
-                #n = str(team['first_name']) + ' ' + str(team['last_name'])
-                n = unicode(team['first_name']) + ' ' + unicode(team['last_name'])
+                if sys.version_info.major >= 3:
+                    n = str(team['first_name']) + ' ' + str(team['last_name'])
+                else:
+                    n = unicode(team['first_name']) + ' ' + unicode(team['last_name'])
                 name = t.strip_accents(n)
                 output[name] = team['won']
                 seeder.append(name)
@@ -68,7 +127,7 @@ class Utility:
                   if unicodedata.category(c) != 'Mn')
 
 
-class NHL(Resource):
+class API(Resource):
     sport_id = 1
     api_name = 'build'
 
@@ -109,7 +168,10 @@ class NHL(Resource):
         if member_id == 'all':
             db_members = Members.query.filter(Members.sport_id == sport_id).all()
         elif member_id:
-            db_members = Members.query.get(member_id)
+            db_members_result = Members.query.get(member_id)
+            db_members = []
+            db_members.append(db_members_result)
+            #db_members = db_members_result.serialize()
 
         if db_members:
             ordered, members = {}, {}
@@ -134,10 +196,15 @@ class NHL(Resource):
             out.append(members[key])
         return out
 
-    def build(self, feed, build_type, sport_id):
-        if build_type == 'html':
-            members = self.member(feed, 'all', sport_id)
-        return {'members': members}
+    def build(self, member_id, feed, build_type, sport_id):
+        if build_type == 'json':
+            m = self.member(feed, member_id, sport_id)
+            return {'members': m}
+        elif build_type == 'html':
+            o = self.member(feed, member_id, sport_id)
+            u = Utility()
+            h = u.html_table(o)
+            return {'html': h}
 
     def get(self, sport_name, api_name, feed=None, member_id=None):
         self.api_name = api_name
@@ -151,56 +218,135 @@ class NHL(Resource):
         elif self.api_name == 'member':
             return self.member(feed, member_id, self.sport_id)
         elif self.api_name == 'feed':
-            return {"Chicago Blackhawks": 25, "Philadelphia Flyers": 22, "Buffalo Sabres": 16, "Arizona Coyotes": 15, "Nashville Predators": 31, "Toronto Maple Leafs": 31, "Carolina Hurricanes": 24, "Boston Bruins": 24, "Pittsburgh Penguins": 27, "New York Rangers": 28, "San Jose Sharks": 26, "Edmonton Oilers": 20, "Minnesota Wild": 25, "Washington Capitals": 29, "Dallas Stars": 25, "Vancouver Canucks": 26, "Columbus Blue Jackets": 31, "New York Islanders": 30, "Tampa Bay Lightning": 34, "Calgary Flames": 27, "Los Angeles Kings": 29, "Montreal Canadiens": 21, "Detroit Red Wings": 25, "Ottawa Senators": 22, "New Jersey Devils": 32, "Florida Panthers": 18, "Anaheim Ducks": 24, "Vegas Golden Knights": 31, "Winnipeg Jets": 31, "St. Louis Blues": 35, "Colorado Avalanche": 24}
-            #return self.feed(self.sport_id)
+            return self.feed(self.sport_id)
 
 
-class NHL_Member(Resource):
-    def get(self, member_id=None):
-        nhl = NHL()
-        feed = nhl.feed(1)
-        member = nhl.member(feed, member_id, 1)
-        return {'member_id': member_id, 'member': member}
+class Pools_Member(Resource):
+    ''' GET | POST A MEMBER PROFILE '''
+    def __init__(self):
+        self.reqparse = reqparse.RequestParser()
+        self.reqparse.add_argument('key', type = str)        
+        self.reqparse.add_argument('token', type = str)
+        self.reqparse.add_argument('name', type = str)
+        self.reqparse.add_argument('email', type = str)
+        self.reqparse.add_argument('sport_id', type = int)
+        super(Pools_Member, self).__init__()
+
+    def get(self, pool, member_id=None):
+        args = self.reqparse.parse_args()
+        a = authenticate(args['key'], args['token'])
+        if a is True:
+            member = Members.query.get(member_id)
+            return member.serialize()
+        else:
+            return a
+
+    def post(self, pool, member_id=None, **kwargs): 
+        args = self.reqparse.parse_args()
+        a = authenticate(args['key'], args['token'])
+        if a is True:
+            if member_id != 'new':
+                mb = Members.query.filter_by(id=member_id).update(args)
+                mb = Members.query.filter_by(id=member_id).first()
+                member = mb.serialize()
+            else:
+                nw = Members(args['email'], args['name'], args['sport_id'])
+                db.session.add(nw)
+                db.session.commit()
+                member = nw.serialize()
+            return member
+        else:
+            return a
 
 
-class NHL_Build(Resource):
-    def get(self, build_type):
-        nhl = NHL()
-        feed = nhl.feed(1)
-        parse = nhl.parse(1, feed)
-        build = nhl.build(parse, build_type, 1)
-        return build
+class Pools_MemberTeam(Resource):
+    ''' GET | POST A MEMBERS TEAMS CHOICES '''
+    def __init__(self):
+        self.reqparse = reqparse.RequestParser()
+        self.reqparse.add_argument('key', type = str)        
+        self.reqparse.add_argument('token', type = str)
+        self.reqparse.add_argument('A', type = int)        
+        self.reqparse.add_argument('B', type = int)
+        self.reqparse.add_argument('C', type = int)
+        self.reqparse.add_argument('D', type = int)
+        self.reqparse.add_argument('E1', type = int)
+        self.reqparse.add_argument('E2', type = int)
+        super(Pools_MemberTeam, self).__init__()
+
+    def get(self, pool, member_id=None):
+        args = self.reqparse.parse_args()
+        a = authenticate(args['key'], args['token'])
+        if a is True:
+            output = {}
+            output[member_id], memberteams = {}, MembersTeams.query.filter_by(member_id=member_id).all()
+            for memberteam in memberteams:
+                mt = memberteam.serialize()
+                print(mt)
+                cm = SportsColumns.query.get(mt['column_id'])
+                tm = Teams.query.get(mt['team_id'])
+                ts, cs = tm.serialize(), cm.serialize()
+                keyname = cs['name'] if cs['name'] not in output[member_id] else 'E2' 
+                output[member_id][keyname] = ts['name']
+            return output
+        else:
+            return a
+
+    def post(self, pool, member_id):
+        args = self.reqparse.parse_args()
+        a = authenticate(args['key'], args['token'])
+        if a is True:
+            alist = ['E1','E2']
+            for arg in args:
+                argname = 'E' if arg in alist else arg
+                sct = SportsColumns.query.filter_by(sport_id=1, name=argname).first()
+                scr = sct.serialize()
+                mt = MembersTeams(member_id, scr['id'], args[arg])
+                db.session.add(mt)
+                db.session.commit()
+        else:
+            return a
 
 
-class NBA_Member(Resource):
-    def get(self, member_id=None):
-        nhl = NHL()
-        feed = nhl.feed(2)
-        member = nhl.member(feed, member_id, 2)
-        return {'member_id': member_id, 'member': member}
+class Pools_Build(Resource):
+    def __init__(self):
+        self.reqparse = reqparse.RequestParser()
+        self.reqparse.add_argument('key', type = str)        
+        self.reqparse.add_argument('token', type = str)
+        super(Pools_Build, self).__init__()
+
+    ''' GET BUILD '''
+    def get(self, pool, build_type, member_id='all'):
+        args = self.reqparse.parse_args()
+        a = authenticate(args['key'], args['token'])
+        if a is True:
+            nhl = API()
+            sport_id = 1 if pool == 'nhl' else 2
+            feed = nhl.feed(sport_id)
+            parse = nhl.parse(sport_id, feed)
+            build = nhl.build(member_id, parse, build_type, sport_id)
+            return build
+        else:
+            return a
 
 
-class NBA_Build(Resource):
-    def get(self, build_type):
-        nba = NHL()
-        feed = nba.feed(2)
-        parse = nba.parse(2, feed)
-        build = nba.build(parse, build_type, 2)
-        return build
+# API AUTH ROUTE
+api.add_resource(API_Auth, '/api/auth')
 
+# API ROUTES
+api.add_resource(API, '/api/<api_name>')
 
-api.add_resource(NHL, '/nhl/<api_name>')
+api.add_resource(Pools_Member, '/<pool>/member/<member_id>', endpoint='poolmember')
+api.add_resource(Pools_MemberTeam, '/<pool>/memberteam/<member_id>', endpoint='poolmemberteams')
+api.add_resource(Pools_Build, '/<pool>/build/<build_type>/<member_id>', endpoint='poolbuild')
 
-api.add_resource(NHL_Member, '/nhl/member/<member_id>')
-api.add_resource(NHL_Build, '/nhl/build/<build_type>')
+#api.add_resource(NBA_Member, '/nba/member/<member_id>', endpoint='nbamember')
+#api.add_resource(NBA_Build, '/nba/build/<build_type>', endpoint='nbabuild')
 
-api.add_resource(NBA_Member, '/nba/member/<member_id>')
-api.add_resource(NBA_Build, '/nba/build/<build_type>')
 
 if __name__ == '__main__':
     # initialize the log handler
     logHandler = RotatingFileHandler('info.log', maxBytes=1000, backupCount=1)
-    
+
     # set the log handler level
     logHandler.setLevel(logging.INFO)
 
@@ -208,5 +354,9 @@ if __name__ == '__main__':
     app.logger.setLevel(logging.INFO)
 
     app.logger.addHandler(logHandler)
-    app.run()
+
+    app.logger.debug('A value for debugging')
+    app.logger.warning('A warning occurred')
+    app.logger.error('An error occurred')
+    app.run(host='0.0.0.0')
 
