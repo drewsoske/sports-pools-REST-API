@@ -19,13 +19,13 @@ import unicodedata
 # FLASK APP
 app = Flask(__name__)
 secret = Secrets()
+basedir = os.path.abspath(os.path.dirname(__file__))
 app.config['SECRET_KEY'] = secret.secret() #'Dr3wgIlity57h0u$@nD' # Keep this in another file outside project
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'pools.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
 # START Flask_RESTFul API
 api = Api(app)
-basedir = os.path.abspath(os.path.dirname(__file__))
 
 # DB 
 db_connect = create_engine('sqlite:///pools.db')
