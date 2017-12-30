@@ -13,7 +13,7 @@ API KEY can be obtained by emailing me at d@drewsoske.com
 
 ----/api/auth POST key TO OBTAIN TOKEN (secret stored in separate file not included on Git)
 
-	----Other Routes SEND key, token WITH EVERY REQUEST 
+----Other Routes SEND key, token WITH EVERY REQUEST 
 
 REFACTORING
 
