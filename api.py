@@ -4,12 +4,11 @@ from flask_restful import Resource, Api, reqparse
 from flask_sqlalchemy import SQLAlchemy
 from flask_httpauth import HTTPBasicAuth
 from itsdangerous import (TimedJSONWebSignatureSerializer as Serializer, BadSignature, SignatureExpired)
-from logging.handlers import RotatingFileHandler
-from models import Members, Teams, MembersTeams, SportsColumns, SportsColumnsTeams
+from models import Members, Teams, MembersTeams, SportsColumns, SportsColumnsTeams, ApiUsers
 from sqlalchemy import create_engine
+from raven.contrib.flask import Sentry
 
 import hashlib
-import logging
 import os
 import requests
 import simplejson as json
@@ -20,7 +19,7 @@ import unicodedata
 app = Flask(__name__)
 secret = Secrets()
 basedir = os.path.abspath(os.path.dirname(__file__))
-app.config['SECRET_KEY'] = secret.secret() #'Dr3wgIlity57h0u$@nD' # Keep this in another file outside project
+app.config['SECRET_KEY'] = secret.secret()
 app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///' + os.path.join(basedir, 'pools.db')
 app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
 
@@ -34,6 +33,12 @@ db = SQLAlchemy(app)
 # START SESSION
 session = requests.Session()
 session.headers['Content-Type'] = 'application/json'
+
+# SENTRY
+sentry = Sentry(app, dsn='https://4491bf3c14aa4248be7166bdc0848383:1376151220554a1ea2eae341502ad1ba@sentry.io/260429')
+
+# STREAK DICT
+streak = {}
 
 
 # AUTHORIZE AND MAKE, SEND & STORE TOKEN
@@ -49,21 +54,40 @@ class API_Auth(Resource):
            TOKEN IS TO BE CHECKED WITH EACH REQUEST IN THE API ROUTES
         '''
         args = self.reqparse.parse_args()
-        # MAKE THE TOKEN
-        t = self.make_token(800, args['key'])
-        # ADD FURTHER HASHED TOKEN TO SESSION
-        s = hashlib.sha224(str(t).encode('utf-8') + str(args['key']).encode('utf-8') + str(app.config['SECRET_KEY']).encode('utf-8')).hexdigest()
-        session.auth = s
-        return t
+        # CHECK THE USER
+        u = self.check_user(args['key'])
+        if u:
+            # MAKE THE TOKEN
+            t = self.make_token(800, args['key'])
+            # ADD FURTHER HASHED TOKEN TO SESSION
+            s = hashlib.sha224(str(t).encode('utf-8') + str(args['key']).encode('utf-8') + str(app.config['SECRET_KEY']).encode('utf-8')).hexdigest()
+            session.auth = s
+            return t
+        else:
+            return {'message': 'You must have an API account.'}
+
+    def check_user(self, k):
+        ''' 
+           CHECK IF API KEY IS REGISTERED IN DB - FOR NOW JUST CHECK FOR THE KEY 
+        '''
+        a = ApiUsers.query.filter(ApiUsers.key==k).first()
+        print(a)
+        if a:
+            return True
+        return False
 
     def make_token(self, expiration=800, key=1234):
-        ''' MAKE A TOKEN '''
+        ''' 
+           MAKE A TOKEN 
+        '''
         s = Serializer(app.config['SECRET_KEY'], expires_in=expiration)
         t = hashlib.sha224(str(s.dumps({'key':key})).encode('utf-8')).hexdigest()
         return t
 
     def check_token(self, key, token):
-        ''' CHECK THE TOKEN '''
+        ''' 
+           CHECK THE TOKEN 
+        '''
         args = self.reqparse.parse_args()
         c = hashlib.sha224(str(token).encode('utf-8') + str(key).encode('utf-8') + str(app.config['SECRET_KEY']).encode('utf-8')).hexdigest()
         if c == session.auth:
@@ -74,12 +98,10 @@ class API_Auth(Resource):
 def authenticate(key, token):
     a = API_Auth()
     c = a.check_token(key, token)
-    print(key, token, c)
     if c:
         return True
     else:
         return {'message': 'You must login. Please obtain an API Key from drewsoske.com if you need one.'}
-        #Response('Login Please. Thank You.', 401, {'WWW Authenticate': 'Basic Realm="Login Please. Thank You."'})
 
 
 class Feeds:
@@ -87,8 +109,8 @@ class Feeds:
         d = {'message': 'No Results'}
         if sport_id == 1:
             url = "http://statsapi.web.nhl.com/api/v1/standings?season=20172018"
-            r = requests.get(url, stream=True)
-            d = json.loads(r.text)
+            r = requests.get(url)
+            d = json.loads(r.text.encode('utf-8'))
             return d
         elif sport_id == 2:
             url = "https://erikberg.com/nba/standings.json"
@@ -106,6 +128,7 @@ class Parser:
                 for team in conference['teamRecords']:
                     name = t.strip_accents(team['team']['name'])
                     output[name] = team['points']
+                    streak[name] = team['streak']['streakCode']
                     seeder.append(name)
         elif sport_id == 2:
             for team in feed['standing']:
@@ -115,6 +138,7 @@ class Parser:
                     n = unicode(team['first_name']) + ' ' + unicode(team['last_name'])
                 name = t.strip_accents(n)
                 output[name] = team['won']
+                streak[name] = team['streak']
                 seeder.append(name)
         if seed:
             return seeder
@@ -125,6 +149,29 @@ class Utility:
     def strip_accents(self, s):
         return ''.join(c for c in unicodedata.normalize('NFD', s)
                   if unicodedata.category(c) != 'Mn')
+   
+    def html_builder(self, sport_id, data):
+        rows, template = str(''), """<html><head><title>%s</title></head><body>%s</body></html>"""
+        title = 'NHL Pools' if sport_id == 1 else 'NBA Pools'
+        table = """<table class='poolresults'><tr>%s</tr>%s</table>"""
+        labels = """<th></th><th>Total</th><th>A</th><th>B</th><th>C</th><th>D</th><th colspan='2'>E</th>"""
+        for row in data:
+            t = """<tr>
+                       <th>%s</th>
+                       <th>%s</th>
+                       <td><h3>%s</h3><p>%s (%s)</p></td>
+                       <td><h3>%s</h3><p>%s (%s)</p></td>
+                       <td><h3>%s</h3><p>%s (%s)</p></td>
+                       <td><h3>%s</h3><p>%s (%s)</p></td>
+                       <td><h3>%s</h3><p>%s (%s)</p></td>
+                       <td><h3>%s</h3><p>%s (%s)</p></td>
+                   </tr>"""
+            a, b, c, d, e, e2 = row.get('A'), row.get('B'), row.get('C'), row.get('D'), row.get('E'), row.get('E2')
+            p = t % (row['name'], row['total'], a[1], a[0], streak[a[0]], b[1], b[0], streak[b[0]], c[1], c[0], streak[c[0]], d[1], d[0], streak[d[0]], e[1], e[0], streak[e[0]], e2[1], e2[0], streak[e2[0]],)
+            rows = rows + p
+        body = table % (labels, rows)
+        html = template % (title, body)
+        return html
 
 
 class API(Resource):
@@ -158,7 +205,7 @@ class API(Resource):
         mbs = {}
         ms = Members.query.filter(Members.sport_id == sport_id).all()
         for m in ms:
-            mbs[m.id] = m.name
+            mbs[m.id] = m.name	
         return mbs
 
     # returns just a list of pool members/or one with their current standings
@@ -184,8 +231,12 @@ class API(Resource):
                         c = col.name
                     if c in d:
                         c = 'E2'
-                    d[c] = (member_team.name, feed[member_team.name])
-                    d['total'] += feed[member_team.name]
+                    if sport_id == 1:
+                        d[c] = (member_team.name, feed[member_team.name], streak[member_team.name])
+                        d['total'] += feed[member_team.name]
+                    elif sport_id == 2:
+                        d[c] = (member_team.name, feed[member_team.name], streak[member_team.name])
+                        d['total'] += feed[member_team.name]
                 key = str(d['total']) + '_' + str(member.name)
                 members[key] = d
         else:
@@ -203,10 +254,11 @@ class API(Resource):
         elif build_type == 'html':
             o = self.member(feed, member_id, sport_id)
             u = Utility()
-            h = u.html_table(o)
-            return {'html': h}
+            h = u.html_builder(sport_id, o)
+            print(h)
+            return h
 
-    def get(self, sport_name, api_name, feed=None, member_id=None):
+    def get(self, api_name, feed=None, member_id=None):
         self.api_name = api_name
         if sport_name == 'nhl':
             self.sport_id = 1
@@ -333,30 +385,12 @@ class Pools_Build(Resource):
 api.add_resource(API_Auth, '/api/auth')
 
 # API ROUTES
-api.add_resource(API, '/api/<api_name>')
-
+api.add_resource(API, '/apiname/<api_name>')
 api.add_resource(Pools_Member, '/<pool>/member/<member_id>', endpoint='poolmember')
 api.add_resource(Pools_MemberTeam, '/<pool>/memberteam/<member_id>', endpoint='poolmemberteams')
 api.add_resource(Pools_Build, '/<pool>/build/<build_type>/<member_id>', endpoint='poolbuild')
 
-#api.add_resource(NBA_Member, '/nba/member/<member_id>', endpoint='nbamember')
-#api.add_resource(NBA_Build, '/nba/build/<build_type>', endpoint='nbabuild')
-
 
 if __name__ == '__main__':
-    # initialize the log handler
-    logHandler = RotatingFileHandler('info.log', maxBytes=1000, backupCount=1)
-
-    # set the log handler level
-    logHandler.setLevel(logging.INFO)
-
-    # set the app logger level
-    app.logger.setLevel(logging.INFO)
-
-    app.logger.addHandler(logHandler)
-
-    app.logger.debug('A value for debugging')
-    app.logger.warning('A warning occurred')
-    app.logger.error('An error occurred')
     app.run(host='0.0.0.0')
 

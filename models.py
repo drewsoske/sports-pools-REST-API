@@ -31,6 +31,25 @@ class Serializer(object):
         return [m.serialize() for m in l]
 
 
+#API Users Model
+class ApiUsers(db.Model, Serializer):
+    id = db.Column(db.Integer, primary_key=True)
+    sport_id = db.Column(db.Integer, unique=False)
+    key = db.Column(db.String(200), unique=True)
+    username = db.Column(db.String(200), unique=False)
+    password = db.Column(db.String(200), unique=False)
+
+    def __init__(self, sport_id, key, username, password):
+        self.sport_id = sport_id
+        self.key = key
+        self.username = username
+        self.password = password
+
+    def serialize(self):
+        d = Serializer.serialize(self)
+        return d
+
+
 # Member Model
 class Members(db.Model, Serializer):
     id = db.Column(db.Integer, primary_key=True)
