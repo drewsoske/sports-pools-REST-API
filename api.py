@@ -34,9 +34,6 @@ db = SQLAlchemy(app)
 session = requests.Session()
 session.headers['Content-Type'] = 'application/json'
 
-# SENTRY
-sentry = Sentry(app, dsn='https://4491bf3c14aa4248be7166bdc0848383:1376151220554a1ea2eae341502ad1ba@sentry.io/260429')
-
 # STREAK DICT
 streak = {}
 
